@@ -1,0 +1,295 @@
+{
+  "name": "Şirket içi Workflow Bottleneck Tespit Sistemi",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "501579e8-804c-44de-aea8-3c99c6375fe0",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": {
+          "__rl": true,
+          "value": "https://www.notion.so/350d75b234ee802f8f73db5e6f423c92?v=350d75b234ee80cfb111000c13b7a537",
+          "mode": "url"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "62964a0b-e02e-4de1-81c6-794ee11d8173",
+      "name": "task",
+      "credentials": {
+        "notionApi": {
+          "id": "PCnig6vMckawrsh0",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Şu anki zaman referansı\nconst now = new Date();\n\n// Sadece uyarı verilecek darboğaz görevlerini tutacağımız liste\nconst bottleneckItems = [];\n\n// Önceliklerin (Priority) katsayıları\nconst priorityWeights = {\n  \"low\": 1,\n  \"medium\": 1.5,\n  \"high\": 2,\n  \"Critical\": 3\n};\n\nfor (const item of $input.all()) {\n  const data = item.json;\n  \n  // Notion'dan gelen veriler (Property isimleri görselindeki gibi güncellendi)\n  const lastUpdatedStr = data.property_last_updated_raw?.start;\n  const deadlineStr = data.property_deadline_raw?.start || data.property_deadline?.start; \n  const status = data.property_status;\n  const priority = data.property_priority;\n  \n  // Eğer tarih verileri boşsa bu görevi atla\n  if (!lastUpdatedStr || !deadlineStr) continue;\n\n  const lastUpdated = new Date(lastUpdatedStr);\n  const deadline = new Date(deadlineStr);\n  \n  // 1. Bekleme Süresi (Waiting Hours) Hesaplama\n  const waitingMs = now.getTime() - lastUpdated.getTime();\n  const waitingHours = Math.max(0, Math.floor(waitingMs / (1000 * 60 * 60)));\n  \n  // 2. Gecikme Gün Sayısı (Overdue Days) Hesaplama\n  const overdueMs = now.getTime() - deadline.getTime();\n  const overdueDays = Math.max(0, Math.floor(overdueMs / (1000 * 60 * 60 * 24)));\n  \n  // 3. BOTTLENECK SCORE (Darboğaz Skoru) Hesaplama\n  let score = 0;\n  \n  // A) Durum Puanı: \"Stuck\" olanlar anında alarm sebebidir\n  if (status === \"Stuck\") score += 30;\n  else if (status === \"in progress\") score += 10;\n  \n  // B) Zaman Puanları: Her 10 saat bekleme 1 puan, her gecikme günü 5 puan ekler\n  score += Math.floor(waitingHours / 10); \n  score += (overdueDays * 5); \n  \n  // C) Öncelik Çarpanı: Çıkan ham skor, görevin önceliği ile çarpılır\n  const pWeight = priorityWeights[priority] || 1;\n  score = Math.floor(score * pWeight); \n  \n  // 4. RISK LEVEL (Risk Seviyesi) Belirleme\n  let riskLevel = \"None\";\n  if (score >= 80) riskLevel = \"Critical\";\n  else if (score >= 50) riskLevel = \"High\";\n  else if (score >= 25) riskLevel = \"Medium\";\n  else if (score > 0) riskLevel = \"Low\";\n  \n  // Hesaplanan verileri JSON içerisine ekliyoruz\n  data[\"calculated_waiting_hours\"] = waitingHours;\n  data[\"calculated_overdue_days\"] = overdueDays;\n  data[\"calculated_bottleneck_score\"] = score;\n  data[\"calculated_risk_level\"] = riskLevel;\n  \n  // 5. FİLTRELEME: Sadece 'High' ve 'Critical' seviyedeki tıkanıklıkları uyarılara gönder\n  if (riskLevel === \"Critical\" || riskLevel === \"High\") {\n    \n    // E-posta adımında kullanılacak özet metin\n    data.alert_summary = `🚨 Tıkanıklık: [${data.property_department}] departmanında ${data.property_owner} sorumluluğundaki \"${data.property_stage}\" aşaması! Skor: ${score} | ${overdueDays > 0 ? overdueDays + ' gün gecikti' : 'Gecikme yok ama uzun süredir beklemede'}.`;\n    \n    bottleneckItems.push(item);\n  }\n}\n\n// Sonraki node'a sadece darboğaz yaratan riskli işler gider\nreturn bottleneckItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "8391f54c-cf4b-49d5-b96d-412f763c20a8",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "databaseId": {
+          "__rl": true,
+          "value": "350d75b2-34ee-8089-96ac-fc4a16b050c3",
+          "mode": "list",
+          "cachedResultName": "Alerts",
+          "cachedResultUrl": "https://app.notion.com/p/350d75b234ee808996acfc4a16b050c3"
+        },
+        "title": "={{ $json.calculated_risk_level }}: {{ $json.property_task_id }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Task ID|rich_text",
+              "textContent": "={{ $json.property_task_id }}"
+            },
+            {
+              "key": "Risk Level|select",
+              "selectValue": "={{ $json.calculated_risk_level }}"
+            },
+            {
+              "key": "Bottleneck Score|number",
+              "numberValue": "={{ $json.calculated_bottleneck_score }}"
+            },
+            {
+              "key": "Owner|rich_text",
+              "textContent": "={{ $json.property_owner }}"
+            },
+            {
+              "key": "Department|select",
+              "selectValue": "={{ $json.property_department }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        656,
+        0
+      ],
+      "id": "b1971f59-81a2-4141-a0a2-9494b5a1f81b",
+      "name": "alerts",
+      "credentials": {
+        "notionApi": {
+          "id": "PCnig6vMckawrsh0",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldsToAggregate": {
+          "fieldToAggregate": [
+            {
+              "fieldToAggregate": "=property_task_id"
+            },
+            {
+              "fieldToAggregate": "=property_owner"
+            },
+            {
+              "fieldToAggregate": "calculated_risk_level"
+            },
+            {
+              "fieldToAggregate": "=calculated_bottleneck_score"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        976,
+        -64
+      ],
+      "id": "dd811c2c-e59e-4970-bb16-4a7e0f9d6360",
+      "name": "Aggregate"
+    },
+    {
+      "parameters": {
+        "sendTo": "nangodonzuri@gmail.com",
+        "subject": "⚠️ KRİTİK: Operasyonel Risk ve Darboğaz Analiz Raporu",
+        "message": "={{ $json.output.replace(/\\n/g, '<br>') }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1552,
+        -224
+      ],
+      "id": "bac522db-826a-43a9-95bd-593f6c50ab4d",
+      "name": "Send a message",
+      "webhookId": "8782a764-c6c6-46d3-be65-52f5f9cb4800",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "lqLjYRMYWj27yiPJ",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=\"Sen bir Şirket İçi Workflow Bottleneck (Darboğaz) Tespit Sistemi uzmanısın. Aşağıdaki verileri kullanarak profesyonel bir analiz raporu hazırla.\n\nRapor Kuralları:\n\nMesajına asla 'İşte raporunuz', 'Verileri analiz ettim' gibi giriş cümleleriyle başlama. Doğrudan ana başlıkla başla.\n\nAnaliz İçeriği:\n\nHangi görevlerde (task_id) ve hangi aşamalarda darboğaz yaşandığını açıkça belirt.\n\nBu darboğazların neden kaynaklandığını (örneğin; aynı kişiye çok fazla görev binmesi veya belirli işlem adımlarının uzun sürmesi) teknik olarak açıkla.\n\nÇözüm önerileri sun.\n\nFormat: Markdown kullan (Başlıklar için #, önemli yerler için ** kullan).\n\n    {{ JSON.stringify($json) }} , {{ $json.property_task_id }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1120,
+        -512
+      ],
+      "id": "fa506e56-bbad-45e9-933d-cab76759f2c1",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        1152,
+        -272
+      ],
+      "id": "72b32949-c404-4e6b-80fd-e314737115cc",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "8rGsu5bHLHNo4r5e",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "task": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "alerts": {
+      "main": [
+        [
+          {
+            "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "4b5266b3-2fca-42e5-86fe-561657f69207",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "faa9786c8ca5cd13adb8e82b7a85c1b0d8c411c722324997702ae3052693319b"
+  },
+  "id": "4huXtfDaMhcep3tt",
+  "tags": []
+}
